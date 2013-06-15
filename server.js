@@ -5,14 +5,12 @@ app.use(express.bodyParser({uploadDir:'./'}));
 
 var uuid = require('node-uuid');
 
-var redis = require("redis"),
-    client = redis.createClient();
-
+var client = require('redis-url').connect(process.env.REDISTOGO_URL);
 var session={};
 	
 // Redis
 client.on("error", function (err) {
-    console.log("Error " + err);
+    console.log(err);
 });
 
 client.on("ready", function () {

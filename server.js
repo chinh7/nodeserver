@@ -187,7 +187,8 @@ function main() {
 		} 
 	});
 	
-	app.get('/api/timeline/:timestamp', function(req,res){
+	// param: timestamp
+	app.get('/api/timeline', function(req,res){
 		client.zrangebyscore('timeline:' + req.user.timeline, 
 			req.param('timestamp'), '+inf', function(err,result){
 				if (err) {
@@ -266,4 +267,4 @@ function main() {
 }
 
 
-app.listen(80)
+app.listen(8080)

@@ -5,6 +5,7 @@
   "private": true,
   "dependencies": {
     "express": "3.x",
-	"node-redis": "x"
+	"node-redis": "x",
+	"redis-url": "0.1.0"
   }
 }

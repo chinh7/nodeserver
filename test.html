@@ -9,10 +9,28 @@
 </form>
 
 
-<p> Sign in </p>
+<p> Sign up </p>
 <form method=post action='http://localhost/signup'>
 	<input type=text name='user'/>
 	<input type=text name='pwd' />
+	<input type=submit />
+</form>
+
+<p> Sign in </p>
+<form method=post action='http://localhost/signin'>
+	<input type=text name='user'/>
+	<input type=text name='pwd' />
+	<input type=submit />
+</form>
+
+<p> Dump </p>
+<form method=get action='http://localhost/api/dump'>
+	<input type=submit />
+</form>
+
+<p> Timeline </p>
+<form method=get action='http://localhost/api/timeline'>
+	<input type=text name='timestamp'/>
 	<input type=submit />
 </form>
 

@@ -1,7 +1,9 @@
 var express = require('express')
 var app = express()
+
+app.use(express.logger());
 app.use(express.cookieParser());
-app.use(express.bodyParser({uploadDir:'./'}));
+app.use(express.bodyParser({keepExtensions: true, uploadDir:'./'}));
 
 var uuid = require('node-uuid');
 
@@ -36,7 +38,7 @@ function requireAuthentication(req, res, next) {
 		}
 		req.user = JSON.parse(user_obj);
 		console.log('Authenticated user: ' + user_obj);
-		next();		
+		next();
 	});
 }
 
@@ -110,8 +112,9 @@ function main() {
    			if (user_obj.pass == pwd) {
    				var auth_id = uuid.v4();
    				session[user] = auth_id;
-   				res.cookie('user', user);
-   				res.cookie('auth_id', auth_id);
+				// TODO expire
+   				res.cookie('user', user, {maxAge: 365*24*60*60*1000});
+   				res.cookie('auth_id', auth_id, {maxAge: 365*24*60*60*1000});
    				res.json(200, user_response(user_obj));
    			} else {
    				res.status(500).json({msg:'Wrong password', user:user_obj});
@@ -156,10 +159,11 @@ function main() {
 					// confirming incoming request TODO notify
 					req.user.partner = target;
 					user_obj.partner = req.user.id;
+					req.user.timeline = user_obj.timeline = uuid.v4();
 					delete user_obj.request;
 					delete user_obj.incoming;
 					delete req.user.request;
-					delete req.user.incoming;						
+					delete req.user.incoming;					
 				} else {
 					// TODO turn down existing incoming request						
 					req.user.incoming = false;
@@ -193,7 +197,7 @@ function main() {
 					res.json(500, {msg:'Internal error'});
 					return;
 				}
-				res.json(200, result);
+				res.json(200, {data:result});
 		});
 	});
 
@@ -208,6 +212,7 @@ function main() {
 			} else {
 				var post = JSON.parse(obj);
 				if (post.timeline && post.timeline == req.user.timeline) {
+					res.type(post.image.type).attachment(post.image.name);
 					res.sendfile(post.image.path);
 				} else {
 					res.json(500, {msg:'No access'});
@@ -216,7 +221,7 @@ function main() {
 		});
 	});
 	
-	app.post('/api/image', function(req, res){
+	function upload_post(req, res){
 		if (req.files == undefined ||
 			req.files.image == undefined) {
 			res.json(500, {msg:'No damn image??'});
@@ -234,6 +239,8 @@ function main() {
 			timeline:req.user.timeline,
 			image:req.files.image
 		};
+
+		console.log('upload_post');
 		
 		client.set('post:' + id, JSON.stringify(post), function(err,obj){
 			if (err) {
@@ -241,11 +248,12 @@ function main() {
 				return;
 			}
 			
+			// TODO Parse images
 			var entry = {
 				id:id,
 				url:'api/image/' + id,
-				width:0,
-				height:0,
+				width:req.param('width'),
+				height:req.param('height'),
 				time:timestamp
 			};
 						
@@ -256,13 +264,15 @@ function main() {
 					return;
 				}
 				
-				res.json(200, {msg:'OK', name:req.files.image.name});
+				res.json(200, {msg:'OK', content:entry});
 				// notify client						
 				
 			});
-		});
-	});
+		});		
+	}
+	
+	app.post('/api/image', upload_post);
 }
 
 
-app.listen(8080)
+app.listen(80)

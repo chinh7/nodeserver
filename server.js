@@ -51,6 +51,15 @@ function user_response(user) {
 	return obj;
 }
 
+function signin(user_obj, res) {
+	var auth_id = uuid.v4();
+	session[user_obj.id] = auth_id;
+	// TODO expire
+	res.cookie('user', user_obj.id, {maxAge: 365*24*60*60*1000});
+	res.cookie('auth_id', auth_id, {maxAge: 365*24*60*60*1000});
+	res.json(200, user_response(user_obj));	
+}
+
 function main() {
 	app.all('/api/*', requireAuthentication);
 	
@@ -93,7 +102,7 @@ function main() {
 						res.status(500).json({msg:'internal error'});
 					}
 					else {
-						res.status(200).json({msg:user_obj});
+						signin(user_obj,res);
 					}
 				}
 			);
@@ -110,12 +119,7 @@ function main() {
 			}
 			var user_obj = JSON.parse(obj);
    			if (user_obj.pass == pwd) {
-   				var auth_id = uuid.v4();
-   				session[user] = auth_id;
-				// TODO expire
-   				res.cookie('user', user, {maxAge: 365*24*60*60*1000});
-   				res.cookie('auth_id', auth_id, {maxAge: 365*24*60*60*1000});
-   				res.json(200, user_response(user_obj));
+   				signin(user_obj,res);
    			} else {
    				res.status(500).json({msg:'Wrong password', user:user_obj});
    			}

@@ -7,15 +7,15 @@ app.use(express.bodyParser({keepExtensions: true, uploadDir:'./'}));
 
 var uuid = require('node-uuid');
 
-var client = require('redis-url').connect(process.env.REDISTOGO_URL);
+var redis = require('redis-url').connect(process.env.REDISTOGO_URL);
 var session={};
 	
 // Redis
-client.on("error", function (err) {
+redis.on("error", function (err) {
     console.log(err);
 });
 
-client.on("ready", function () {
+redis.on("ready", function () {
     console.log("Redis ready! Server running.");
 	main();
 });
@@ -31,7 +31,7 @@ function requireAuthentication(req, res, next) {
 		return;
 	}
 	// load user
-	client.get('user:' + user, function(err,user_obj){
+	redis.get('user:' + user, function(err,user_obj){
 		if (err || !user_obj) {
 			res.json(500, {msg:err});
 			return;
@@ -73,7 +73,7 @@ function main() {
 	
 		var user = req.param('user');
 		var pwd = req.param('pwd');
-		client.get('user:' + user, function(err,obj){
+		redis.get('user:' + user, function(err,obj){
 			if (err) {
 				console.log('signup read error' + err);
 				res.status(500).json({msg:err});
@@ -92,10 +92,11 @@ function main() {
 				male:true,
 				partner:undefined,
 				request:undefined,
-				incoming:undefined // true/false
+				incoming:undefined, // true/false
+				device_token:undefined
 			}; // refactor out
 			
-			client.set('user:' + user, JSON.stringify(user_obj),
+			redis.set('user:' + user, JSON.stringify(user_obj),
 				function(err, redis_res){
 					if (err) {
 						console.log('signup write error');
@@ -112,7 +113,7 @@ function main() {
 	app.post('/signin', function(req, res){
 		var user = req.param('user');
 		var pwd = req.param('pwd');
-		client.get('user:' + user, function(err,obj){
+		redis.get('user:' + user, function(err,obj){
 			if (err != null || obj == null) {
 				res.status(500).json({msg:'User not existent'});	
 				return;		
@@ -146,7 +147,7 @@ function main() {
 		} else if (req.user.incoming != undefined && req.user.incoming == false) {
 			res.json(500, {msg:'Previous request already sent'});
 		} else {
-			client.get('user:' + target, function(err,user_str){
+			redis.get('user:' + target, function(err,user_str){
 				if (err || !user_str) {
 					res.json(500, {msg:'Invalid user id:' + target});
 					return;
@@ -176,7 +177,7 @@ function main() {
 					user_obj.request = req.user.id;					
 				}
 				
-				client.mset(
+				redis.mset(
 					'user:' + user_obj.id, JSON.stringify(user_obj),
 					'user:' + req.user.id, JSON.stringify(req.user),
 					function(err, redis_res){
@@ -195,7 +196,7 @@ function main() {
 	
 	// param: timestamp
 	app.get('/api/timeline', function(req,res){
-		client.zrangebyscore('timeline:' + req.user.timeline, 
+		redis.zrangebyscore('timeline:' + req.user.timeline, 
 			req.param('timestamp'), '+inf', function(err,result){
 				if (err) {
 					res.json(500, {msg:'Internal error'});
@@ -206,7 +207,7 @@ function main() {
 	});
 
 	app.get('/api/image/:id', function(req,res){
-		client.get('post:' + req.param('id'), function(err,obj){
+		redis.get('post:' + req.param('id'), function(err,obj){
 			if (err) {
 				res.json(500, {msg:'Internal error'});
 				return;
@@ -224,8 +225,8 @@ function main() {
 			}
 		});
 	});
-	
-	function upload_post(req, res){
+
+	app.post('/api/image', function(req, res){
 		if (req.files == undefined ||
 			req.files.image == undefined) {
 			res.json(500, {msg:'No damn image??'});
@@ -243,10 +244,8 @@ function main() {
 			timeline:req.user.timeline,
 			image:req.files.image
 		};
-
-		console.log('upload_post');
 		
-		client.set('post:' + id, JSON.stringify(post), function(err,obj){
+		redis.set('post:' + id, JSON.stringify(post), function(err,obj){
 			if (err) {
 				res.json(500, {msg:'Failed to save post'});
 				return;
@@ -261,7 +260,7 @@ function main() {
 				time:timestamp
 			};
 						
-			client.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry),
+			redis.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry),
 				function(err,obj){
 				if (err) {
 					res.json(500, {msg:'Failed to save post in timeline'});
@@ -272,10 +271,26 @@ function main() {
 				// notify client						
 				
 			});
-		});		
-	}
+		});
+	});		
 	
-	app.post('/api/image', upload_post);
+	app.post('/api/synctoken', function(req, res) {
+		var token = req.param('token');
+		var user_id = req.user.id;
+		req.user.device_token = token;
+
+		// TODO remove the old token association
+		var multi = redis.multi();
+					
+		multi.set('user:' + user_id, JSON.stringify(req.user));
+		if (token) {
+			multi.set('token:' + token, user_id);
+		}
+		
+		multi.exec(function (err, replies) {
+		    console.log(replies); // 101, 2
+		});
+	});
 }
 
 

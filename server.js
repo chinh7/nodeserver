@@ -6,17 +6,50 @@ app.use(express.cookieParser());
 app.use(express.bodyParser({keepExtensions: true, uploadDir:'./'}));
 
 var uuid = require('node-uuid');
-
 var redis = require('redis-url').connect(process.env.REDISTOGO_URL);
 var session={};
-	
+
+// Apple Push Notification
+var apn = require('apn');
+var options = { 
+	"gateway": "gateway.sandbox.push.apple.com",
+	'cert': "cert.pem",
+	"key": "key.pem"
+};
+
+var apnConnection = new apn.Connection(options);
+
+apnConnection.on('connected', function() {
+    console.log("APN Connected");
+});	
+
+apnConnection.on('transmitted', function(notification, device) {
+    console.log("Notification transmitted to:" + device.token.toString('base64'));
+});
+
+apnConnection.on('transmissionError', function(errCode, notification, device) {
+    console.error("Notification caused error: " + errCode + " for device ", device, notification);
+});
+
+apnConnection.on('timeout', function () {
+    console.log("Connection Timeout");
+});
+
+apnConnection.on('disconnected', function() {
+    console.log("Disconnected from APNS");
+});
+
+apnConnection.on('socketError', console.error);
+
+
 // Redis
 redis.on("error", function (err) {
     console.log(err);
 });
 
 redis.on("ready", function () {
-    console.log("Redis ready! Server running.");
+	// TODO called multiple times
+    console.log("Redis ready!");
 	main();
 });
 
@@ -68,9 +101,7 @@ function main() {
 		//TODO dump timeline
 	});
 	
-	app.post('/signup', function(req, res) {
-		console.log('/signup/' + req.params);
-	
+	app.post('/signup', function(req, res) {	
 		var user = req.param('user');
 		var pwd = req.param('pwd');
 		redis.get('user:' + user, function(err,obj){
@@ -81,7 +112,6 @@ function main() {
 			}
 			
 			if (obj){
-				console.log('User exists');
 				res.status(500).json({msg: "User already exists"});
 				return;
 			}
@@ -182,12 +212,24 @@ function main() {
 					'user:' + req.user.id, JSON.stringify(req.user),
 					function(err, redis_res){
 					if (err) {
-						res.json(500, {msg:'Internal error, faild to write database'});
+						res.json(500, {msg:'Internal error'});
 						return;
 					}
 					
+					// notify the other user about the change
+					if (user_obj.device_token) {
+						console.log('Send notification to ' + user_obj.id);
+					    var note = new apn.notification();
+					    note.setAlertText(req.user.id + " wants to share with you");
+					    note.badge = 1;
+						note.payload.user = user_response(user_obj);
+						var token = new Buffer(user_obj.device_token, 'base64');
+					    apnConnection.pushNotification(note, token);
+					} else {
+						console.log(user_obj.id + ' doesn\'t yet have device token');
+					}
+				
 					var response_obj = user_response(req.user);
-					// TODO notify the other user about the change
 					res.json(200, response_obj);						
 				});
 			});
@@ -275,9 +317,13 @@ function main() {
 	});		
 	
 	app.post('/api/synctoken', function(req, res) {
+		
 		var token = req.param('token');
 		var user_id = req.user.id;
 		req.user.device_token = token;
+
+		console.log('/api/synctoken. user:' + req.user.id + ' Token:' + token + ' Len:' + (new Buffer(token, 'base64')).length);
+
 
 		// TODO remove the old token association
 		var multi = redis.multi();
@@ -288,7 +334,13 @@ function main() {
 		}
 		
 		multi.exec(function (err, replies) {
-		    console.log(replies); // 101, 2
+			if (err) {
+				res.json(500, {msg:'Internal error'});
+				return;
+			}
+			
+		    res.json(200);
+			
 		});
 	});
 }

@@ -54,6 +54,15 @@ redis.on("ready", function () {
 });
 
 // User
+/*
+id:user,
+pass:pwd,
+male:true,
+partner:undefined,
+request:undefined,
+incoming:undefined, // true/false
+device_token:undefined
+*/
 function parse_user(json) {
 	var user = JSON.parse(json);
 	
@@ -136,15 +145,11 @@ function main() {
 				return;
 			}
 
-			var user_obj = {
+			var user_obj = parse_user(JSON.stringify({
 				id:user,
 				pass:pwd,
 				male:true,
-				partner:undefined,
-				request:undefined,
-				incoming:undefined, // true/false
-				device_token:undefined
-			}; // refactor out
+			}));
 			
 			redis.set('user:' + user, JSON.stringify(user_obj),
 				function(err, redis_res){

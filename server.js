@@ -53,6 +53,32 @@ redis.on("ready", function () {
 	main();
 });
 
+// User
+function parse_user(json) {
+	var user = JSON.parse(json);
+	
+	// notify function
+	user.notify = function(text, badge, payload) {
+		console.log('Send notification to ' + this.id);
+	    var note = new apn.notification();
+	    note.setAlertText(text);
+	    note.badge = badge;
+		note.payload = payload;
+		var token = new Buffer(this.device_token, 'base64');
+	    apnConnection.pushNotification(note, token);
+	}
+
+	user.response = function() {
+		var obj = {
+			partner:this.partner,
+			request:this.request,
+			incoming:this.incoming
+		};
+		return obj;
+	}
+	return user;
+}
+
 function requireAuthentication(req, res, next) {
 	var user = req.cookies.user;
 	var auth_id = req.cookies.auth_id;
@@ -69,19 +95,10 @@ function requireAuthentication(req, res, next) {
 			res.json(500, {msg:err});
 			return;
 		}
-		req.user = JSON.parse(user_obj);
-		console.log('Authenticated user: ' + user_obj);
+		req.user = parse_user(user_obj);
+		//console.log('Authenticated user: ' + user_obj);
 		next();
 	});
-}
-
-function user_response(user) {
-	var obj = {
-		partner:user.partner,
-		request:user.request,
-		incoming:user.incoming
-	};
-	return obj;
 }
 
 function signin(user_obj, res) {
@@ -90,7 +107,10 @@ function signin(user_obj, res) {
 	// TODO expire
 	res.cookie('user', user_obj.id, {maxAge: 365*24*60*60*1000});
 	res.cookie('auth_id', auth_id, {maxAge: 365*24*60*60*1000});
-	res.json(200, user_response(user_obj));	
+	
+	console.log('Send user obj:' + JSON.stringify(user_obj.response()));
+	
+	res.json(200, user_obj.response());
 }
 
 function main() {
@@ -148,7 +168,7 @@ function main() {
 				res.status(500).json({msg:'User not existent'});	
 				return;		
 			}
-			var user_obj = JSON.parse(obj);
+			var user_obj = parse_user(obj);
    			if (user_obj.pass == pwd) {
    				signin(user_obj,res);
    			} else {
@@ -182,7 +202,7 @@ function main() {
 					res.json(500, {msg:'Invalid user id:' + target});
 					return;
 				}
-				var user_obj = JSON.parse(user_str);
+				var user_obj = parse_user(user_str);
 				// Other user cancelled the request or already partnered with sb else
 				if (user_obj.partner ||
 					user_obj.request && user_obj.request != req.user.id) {
@@ -218,18 +238,16 @@ function main() {
 					
 					// notify the other user about the change
 					if (user_obj.device_token) {
-						console.log('Send notification to ' + user_obj.id);
-					    var note = new apn.notification();
-					    note.setAlertText(req.user.id + " wants to share with you");
-					    note.badge = 1;
-						note.payload.user = user_response(user_obj);
-						var token = new Buffer(user_obj.device_token, 'base64');
-					    apnConnection.pushNotification(note, token);
+						var payload = {
+							type:'pair',
+							user:user_obj.response()
+						}
+						user_obj.notify(req.user.id + " wants to share with you", 1, payload);
 					} else {
 						console.log(user_obj.id + ' doesn\'t yet have device token');
 					}
 				
-					var response_obj = user_response(req.user);
+					var response_obj = req.user.response();
 					res.json(200, response_obj);						
 				});
 			});
@@ -287,31 +305,35 @@ function main() {
 			image:req.files.image
 		};
 		
-		redis.set('post:' + id, JSON.stringify(post), function(err,obj){
+		// TODO Parse images
+		var entry = {
+			id:id,
+			url:'api/image/' + id,
+			width:req.param('width'),
+			height:req.param('height'),
+			time:timestamp
+		};
+
+		var multi = redis.multi();
+		
+		multi.set('post:' + id, JSON.stringify(post));
+		multi.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry));
+		
+		multi.exec(function(err,obj){
 			if (err) {
-				res.json(500, {msg:'Failed to save post'});
+				res.json(500, {msg:'Internal error'});
 				return;
 			}
 			
-			// TODO Parse images
-			var entry = {
-				id:id,
-				url:'api/image/' + id,
-				width:req.param('width'),
-				height:req.param('height'),
-				time:timestamp
-			};
-						
-			redis.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry),
-				function(err,obj){
-				if (err) {
-					res.json(500, {msg:'Failed to save post in timeline'});
-					return;
+			res.json(200, {content:entry});
+			// notify client						
+			redis.get('user:' + req.user.partner, function(err, obj){
+				if (obj) {
+					var partner = parse_user(obj);
+					partner.notify(req.user.id + ' took a picture', 1, {
+						type:'post'
+					});
 				}
-				
-				res.json(200, {msg:'OK', content:entry});
-				// notify client						
-				
 			});
 		});
 	});		
@@ -323,7 +345,6 @@ function main() {
 		req.user.device_token = token;
 
 		console.log('/api/synctoken. user:' + req.user.id + ' Token:' + token + ' Len:' + (new Buffer(token, 'base64')).length);
-
 
 		// TODO remove the old token association
 		var multi = redis.multi();

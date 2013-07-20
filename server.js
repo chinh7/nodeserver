@@ -68,13 +68,15 @@ function parse_user(json) {
 	
 	// notify function
 	user.notify = function(text, badge, payload) {
-		console.log('Send notification to ' + this.id);
-	    var note = new apn.notification();
-	    note.setAlertText(text);
-	    note.badge = badge;
-		note.payload = payload;
-		var token = new Buffer(this.device_token, 'base64');
-	    apnConnection.pushNotification(note, token);
+		if (this.device_token) {
+			console.log('Send notification to ' + this.id);
+		    var note = new apn.notification();
+		    note.setAlertText(text);
+		    note.badge = badge;
+			note.payload = payload;
+			var token = new Buffer(this.device_token, 'base64');
+		    apnConnection.pushNotification(note, token);			
+		}
 	}
 
 	user.response = function() {

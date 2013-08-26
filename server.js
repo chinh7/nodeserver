@@ -1,94 +1,42 @@
-var express = require('express')
-var app = express()
+var express = require('express');
+var uuid = require('node-uuid');
 
+var app = express()
 app.use(express.logger());
 app.use(express.cookieParser());
-app.use(express.bodyParser({keepExtensions: true, uploadDir:'./'}));
+app.use(express.bodyParser({keepExtensions: true, uploadDir:'./upload'}));
 
-var uuid = require('node-uuid');
-var redis = require('redis-url').connect(process.env.REDISTOGO_URL);
+// variables
+var running = false;
 var session={};
 
 // Apple Push Notification
-var apn = require('apn');
-var options = { 
-	"gateway": "gateway.sandbox.push.apple.com",
-	'cert': "cert.pem",
-	"key": "key.pem"
-};
-
-var apnConnection = new apn.Connection(options);
-
-apnConnection.on('connected', function() {
-    console.log("APN Connected");
-});	
-
-apnConnection.on('transmitted', function(notification, device) {
-    console.log("Notification transmitted to:" + device.token.toString('base64'));
-});
-
-apnConnection.on('transmissionError', function(errCode, notification, device) {
-    console.error("Notification caused error: " + errCode + " for device ", device, notification);
-});
-
-apnConnection.on('timeout', function () {
-    console.log("Connection Timeout");
-});
-
-apnConnection.on('disconnected', function() {
-    console.log("Disconnected from APNS");
-});
-
-apnConnection.on('socketError', console.error);
-
+var apn = require('./apn.js');
 
 // Redis
+var redis = require('redis-url').connect(process.env.REDISTOGO_URL);
 redis.on("error", function (err) {
     console.log(err);
+	// TODO quit
 });
 
 redis.on("ready", function () {
 	// TODO called multiple times
     console.log("Redis ready!");
-	main();
+	if (!running) {
+		running = true;
+		main();		
+	} else {
+		console.log("Message ignored");
+	}
 });
 
-// User
-/*
-id:user,
-pass:pwd,
-male:true,
-partner:undefined,
-request:undefined,
-incoming:undefined, // true/false
-device_token:undefined
-*/
-function parse_user(json) {
-	var user = JSON.parse(json);
-	
-	// notify function
-	user.notify = function(text, badge, payload) {
-		if (this.device_token) {
-			console.log('Send notification to ' + this.id);
-		    var note = new apn.notification();
-		    note.setAlertText(text);
-		    note.badge = badge;
-			note.payload = payload;
-			var token = new Buffer(this.device_token, 'base64');
-		    apnConnection.pushNotification(note, token);			
-		}
-	}
+// model
+var model = require('./model.js');
+model.init(apn, redis);
 
-	user.response = function() {
-		var obj = {
-			partner:this.partner,
-			request:this.request,
-			incoming:this.incoming
-		};
-		return obj;
-	}
-	return user;
-}
+// config
+var ACTIVE_TIMEOUT = 30*60*1000; // 30 minutes
 
 function requireAuthentication(req, res, next) {
 	var user = req.cookies.user;
@@ -106,9 +54,20 @@ function requireAuthentication(req, res, next) {
 			res.json(500, {msg:err});
 			return;
 		}
-		req.user = parse_user(user_obj);
-		//console.log('Authenticated user: ' + user_obj);
-		next();
+		req.user = model.create_user(user_obj);
+		if (req.user.partner) {
+			redis.get('user:' + req.user.partner, function(err, obj){
+				if (err || !obj) {
+					console.log("error when fetching partner of " + req.user.id);
+					res.json(500);
+				} else {
+					req.partner = model.create_user(obj);
+					next();
+				}
+			});					
+		} else {
+			next();
+		}
 	});
 }
 
@@ -147,7 +106,7 @@ function main() {
 				return;
 			}
 
-			var user_obj = parse_user(JSON.stringify({
+			var user_obj = model.create_user(JSON.stringify({
 				id:user,
 				pass:pwd,
 				male:true,
@@ -175,7 +134,7 @@ function main() {
 				res.status(500).json({msg:'User not existent'});	
 				return;		
 			}
-			var user_obj = parse_user(obj);
+			var user_obj = model.create_user(obj);
    			if (user_obj.pass == pwd) {
    				signin(user_obj,res);
    			} else {
@@ -209,7 +168,7 @@ function main() {
 					res.json(500, {msg:'Invalid user id:' + target});
 					return;
 				}
-				var user_obj = parse_user(user_str);
+				var user_obj = model.create_user(user_str);
 				// Other user cancelled the request or already partnered with sb else
 				if (user_obj.partner ||
 					user_obj.request && user_obj.request != req.user.id) {
@@ -274,26 +233,93 @@ function main() {
 	});
 
 	app.get('/api/image/:id', function(req,res){
-		redis.get('post:' + req.param('id'), function(err,obj){
+		redis.get('image:' + req.param('id'), function(err,obj){
 			if (err) {
 				res.json(500, {msg:'Internal error'});
 				return;
 			}
 			if (!obj) {
 				res.json(500, {msg:'Image doesn\'t exist'});
+				return;
+			}
+			
+			var post = JSON.parse(obj);
+			if (post.timeline && post.timeline == req.user.timeline) {
+				res.type(post.type);
+				res.sendfile(post.path);
 			} else {
-				var post = JSON.parse(obj);
-				if (post.timeline && post.timeline == req.user.timeline) {
-					res.type(post.image.type).attachment(post.image.name);
-					res.sendfile(post.image.path);
-				} else {
-					res.json(500, {msg:'No access'});
-				}
+				res.json(500, {msg:'No access'});
 			}
 		});
 	});
 
-	app.post('/api/image', function(req, res){
+	function create_image_store(timeline, image_width, image_height, image_attachment) {
+		var image_id = uuid.v4();
+		var image_store = {
+			id:image_id,
+			timeline:timeline,
+			size:image_attachment.size,
+			path:image_attachment.path,
+			type:image_attachment.type
+		};
+		
+		var image_info = {
+			url:'api/image/' + image_id,
+			width:image_width,
+			height:image_height
+		};
+		return [image_store, image_info];
+	}
+	
+	function create_subentry(image_info) {
+		var sub_entry = {
+			image:image_info
+			// TODO text emotion location etc		
+		};
+		
+		return sub_entry;
+	}
+	
+	app.post('/api/reply-entry', function(req, res){
+		var timestamp = req.param('timestamp');
+		req.user.fetch_single_entry(timestamp, function (entry){
+			if (entry) {
+				// TODO check expiry
+				
+				var image_width = req.param('width');
+				var image_height = req.param('height');
+				
+				var result = create_image_store(req.user.timeline, image_width, image_height, req.files.image);
+				var image_store = result[0], image_info = result[1];
+				
+				var sub_entry = create_subentry(image_info);
+				entry.subentry2 = sub_entry;
+				
+				var multi = redis.multi();
+				multi.set('image:' + image_store.id, JSON.stringify(image_store));
+				multi.zremrangebyscore('timeline:' + req.user.timeline, entry.time, entry.time); // TODO shouldn't be needed
+				multi.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry));
+				multi.exec(function(err,obj){
+					if (err) {
+						res.json(500, {msg:'Internal error'});
+						return;
+					}
+		
+					console.log('Reply entry, ' + JSON.stringify(entry));
+					res.json(200, entry);
+					req.partner.notify(req.user.id + ' replied your picture', 1, {
+						type:'reply',
+						entry_timestamp:entry.timestamp
+						// TODO meta infomation, emotion, text
+					});
+				});
+			} else {
+				res.json(500, {msg:"Couldn't find entry with timestamp " + timestamp});
+			}
+		});
+	});
+
+	app.post('/api/new-entry', function(req, res){
 		if (req.files == undefined ||
 			req.files.image == undefined) {
 			res.json(500, {msg:'No damn image??'});
@@ -304,45 +330,41 @@ function main() {
 			return;
 		}
 
-		// store image 
-		var id = uuid.v4();
-		var timestamp = new Date().getTime();
-		var post = {
-			timeline:req.user.timeline,
-			image:req.files.image
-		};
+		// Used by client to uniqeuly identify an entry before timestamp is known
+		var entry_id = req.param('id');
+		var image_width = req.param('width');
+		var image_height = req.param('height');
+		var is_solo = req.param('solo') == '1';
+	
+		var result = create_image_store(req.user.timeline, image_width, image_height, req.files.image);
+		var image_store = result[0], image_info = result[1];
 		
-		// TODO Parse images
+		var sub_entry = create_subentry(image_info);
+			
 		var entry = {
-			id:id,
-			url:'api/image/' + id,
-			width:req.param('width'),
-			height:req.param('height'),
-			time:timestamp
+			id:entry_id,
+			subentry1:sub_entry,
+			time:new Date().getTime(),
+			expire:new Date().getTime() + ACTIVE_TIMEOUT,
+			solo:is_solo,
 		};
-
+		
 		var multi = redis.multi();
-		
-		multi.set('post:' + id, JSON.stringify(post));
+	
+		multi.set('image:' + image_store.id, JSON.stringify(image_store));
 		multi.zadd('timeline:' + req.user.timeline, entry.time, JSON.stringify(entry));
-		
+	
 		multi.exec(function(err,obj){
 			if (err) {
 				res.json(500, {msg:'Internal error'});
 				return;
 			}
-			
-			res.json(200, {content:entry});
-			// notify client						
-			redis.get('user:' + req.user.partner, function(err, obj){
-				if (obj) {
-					var partner = parse_user(obj);
-					partner.notify(req.user.id + ' took a picture', 1, {
-						type:'post'
-					});
-				}
+		
+			res.json(200, entry);
+			req.partner.notify(req.user.id + ' took a picture', 1, {
+				type:'post'
 			});
-		});
+		});			
 	});		
 	
 	app.post('/api/synctoken', function(req, res) {

@@ -232,6 +232,17 @@ function main() {
 		});
 	});
 
+	app.get('/api/entry', function(req,res){
+		var timestamp = req.param('timestamp');
+		req.user.fetch_single_entry(timestamp, function (entry){
+			if (entry) {
+				res.json(200, entry);
+			} else {
+				res.json(500);
+			}
+		});
+	});
+
 	app.get('/api/image/:id', function(req,res){
 		redis.get('image:' + req.param('id'), function(err,obj){
 			if (err) {
@@ -309,7 +320,7 @@ function main() {
 					res.json(200, entry);
 					req.partner.notify(req.user.id + ' replied your picture', 1, {
 						type:'reply',
-						entry_timestamp:entry.timestamp
+						entry_timestamp:entry.time
 						// TODO meta infomation, emotion, text
 					});
 				});

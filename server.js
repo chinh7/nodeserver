@@ -1,5 +1,6 @@
 var express = require('express');
 var uuid = require('node-uuid');
+var command_line = require('optimist').argv;
 
 var app = express()
 app.use(express.logger());
@@ -406,5 +407,6 @@ function main() {
 	});
 }
 
-
-app.listen(80)
+var port = command_line.p || 80;
+console.log('Listening at port ' + command_line.p);
+app.listen(port);
